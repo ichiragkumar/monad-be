@@ -1,0 +1,304 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  VENDOR
+}
+
+enum EventStatus {
+  DRAFT
+  ACTIVE
+  COMPLETED
+  CANCELLED
+}
+
+enum TransactionStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+}
+
+enum TransactionType {
+  SEND
+  BATCH
+  REWARD
+  SUBSCRIPTION
+  PAYMENT_LINK
+}
+
+enum SyncStatus {
+  PENDING
+  SYNCING
+  SYNCED
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
+enum PaymentLinkStatus {
+  PENDING
+  EXECUTED
+  EXPIRED
+}
+
+model User {
+  id          String   @id @default(cuid())
+  address     String   @unique // Wallet address (lowercase)
+  ensName     String?  @unique // ENS subdomain (e.g., alice.ourapp.eth)
+  role        UserRole @default(USER)
+  displayName String? // Profile display name
+  avatar      String? // Profile avatar URL
+  lastSeenAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  vendorProfile         Vendor?
+  events                Event[]            @relation("EventOrganizer")
+  transactionsSent      Transaction[]      @relation("TransactionsFrom")
+  transactionsReceived  Transaction[]      @relation("TransactionsTo")
+  batchTransactions     BatchTransaction[]
+  subscriptions         Subscription[]     @relation("Subscriber")
+  subscriptionsReceived Subscription[]     @relation("Recipient")
+  paymentLinks          PaymentLink[]
+  rewards               Reward[]
+
+  @@index([address])
+  @@index([ensName])
+  @@map("users")
+}
+
+model Vendor {
+  id           String   @id @default(cuid())
+  userId       String   @unique
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  businessName String?
+  description  String?
+  website      String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  events Event[] @relation("VendorEvents")
+
+  @@map("vendors")
+}
+
+model Event {
+  id               String      @id @default(cuid())
+  vendorAddress    String // Direct vendor address (indexed)
+  vendorId         String? // Optional relation to vendor profile
+  vendor           Vendor?     @relation("VendorEvents", fields: [vendorId], references: [id])
+  organizerId      String? // User ID who created the event
+  organizer        User?       @relation("EventOrganizer", fields: [organizerId], references: [id])
+  name             String
+  description      String?
+  eventDate        DateTime?
+  status           EventStatus @default(DRAFT)
+  participantCount Int         @default(0)
+  totalDistributed String      @default("0") // Decimal string
+  metadata         Json? // Additional data (location, maxParticipants, etc.)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  // Relations
+  participants      EventParticipant[]
+  rewards           Reward[]
+  batchTransactions BatchTransaction[]
+
+  @@index([vendorAddress])
+  @@index([vendorId])
+  @@index([status])
+  @@map("events")
+}
+
+model EventParticipant {
+  id        String   @id @default(cuid())
+  eventId   String
+  event     Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  address   String // Wallet address
+  ensName   String? // Optional ENS name
+  amount    String? // Optional reward amount (decimal string)
+  createdAt DateTime @default(now())
+
+  @@unique([eventId, address])
+  @@index([eventId])
+  @@index([address])
+  @@map("event_participants")
+}
+
+model Transaction {
+  id             String            @id @default(cuid())
+  txHash         String            @unique // Blockchain transaction hash
+  fromAddress    String
+  fromUser       User?             @relation("TransactionsFrom", fields: [fromAddress], references: [address])
+  toAddress      String
+  toUser         User?             @relation("TransactionsTo", fields: [toAddress], references: [address])
+  amount         String // Decimal string (e.g., "100.5")
+  token          String            @default("XTK") // Token symbol
+  tokenAddress   String? // Token contract address
+  type           TransactionType
+  status         TransactionStatus @default(PENDING)
+  syncStatus     SyncStatus        @default(PENDING)
+  blockNumber    BigInt?
+  blockTimestamp BigInt? // Unix timestamp
+  blockHash      String?
+  gasUsed        String? // Decimal string
+  gasPrice       String? // Decimal string
+  metadata       Json? // Additional data (eventId, subscriptionId, paymentLinkId, batchId)
+  createdAt      DateTime          @default(now())
+  confirmedAt    DateTime?
+
+  @@index([txHash])
+  @@index([fromAddress])
+  @@index([toAddress])
+  @@index([fromAddress, toAddress])
+  @@index([status])
+  @@index([syncStatus])
+  @@index([createdAt(sort: Desc)])
+  @@map("transactions")
+}
+
+model BatchTransaction {
+  id            String            @id @default(cuid())
+  batchId       String            @unique @default(cuid())
+  txHash        String            @unique
+  senderAddress String
+  sender        User?             @relation(fields: [senderAddress], references: [address])
+  recipients    Json // Array of {address, amount}
+  totalAmount   String // Decimal string
+  token         String            @default("XTK")
+  type          String            @default("variable") // "equal" | "variable"
+  eventId       String?
+  event         Event?            @relation(fields: [eventId], references: [id])
+  note          String?
+  status        TransactionStatus @default(PENDING)
+  createdAt     DateTime          @default(now())
+
+  @@index([senderAddress])
+  @@index([eventId])
+  @@index([txHash])
+  @@map("batch_transactions")
+}
+
+model Reward {
+  id               String            @id @default(cuid())
+  rewardId         String            @unique @default(cuid())
+  eventId          String
+  event            Event             @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  vendorAddress    String
+  vendor           User?             @relation(fields: [vendorAddress], references: [address])
+  txHash           String            @unique
+  recipients       Json // Array of {address, amount, reason}
+  totalAmount      String // Decimal string
+  token            String            @default("XTK")
+  distributionType String            @default("variable") // "equal" | "variable"
+  metadata         Json? // Additional data (eventName, notes)
+  status           TransactionStatus @default(PENDING)
+  createdAt        DateTime          @default(now())
+
+  @@index([eventId])
+  @@index([vendorAddress])
+  @@index([txHash])
+  @@map("rewards")
+}
+
+model Subscription {
+  id               String             @id @default(cuid())
+  subscriptionId   String             @unique @default(cuid())
+  onChainId        String // On-chain subscription ID
+  payerAddress     String
+  payer            User               @relation("Subscriber", fields: [payerAddress], references: [address])
+  recipientAddress String
+  recipient        User               @relation("Recipient", fields: [recipientAddress], references: [address])
+  amount           String // Decimal string
+  token            String             @default("XTK")
+  interval         BigInt // Interval in seconds
+  totalPayments    Int                @default(0) // 0 for unlimited
+  paidCount        Int                @default(0)
+  nextPaymentTime  BigInt // Unix timestamp
+  startTime        BigInt // Unix timestamp
+  status           SubscriptionStatus @default(ACTIVE)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  // Relations
+  payments SubscriptionPayment[]
+
+  @@index([payerAddress])
+  @@index([recipientAddress])
+  @@index([status])
+  @@index([nextPaymentTime])
+  @@map("subscriptions")
+}
+
+model SubscriptionPayment {
+  id              String            @id @default(cuid())
+  subscriptionId  String
+  subscription    Subscription      @relation(fields: [subscriptionId], references: [id], onDelete: Cascade)
+  txHash          String?           @unique
+  amount          String // Decimal string
+  paymentNumber   Int
+  nextPaymentTime BigInt? // Updated next payment time
+  status          TransactionStatus @default(PENDING)
+  createdAt       DateTime          @default(now())
+  confirmedAt     DateTime?
+
+  @@index([subscriptionId])
+  @@index([txHash])
+  @@map("subscription_payments")
+}
+
+model PaymentLink {
+  id            String            @id @default(cuid())
+  paymentLinkId String            @unique @default(cuid())
+  senderAddress String
+  sender        User?             @relation(fields: [senderAddress], references: [address])
+  recipients    Json // Array of {address, amount}
+  token         String            @default("XTK")
+  nonce         Int
+  expiry        BigInt // Unix timestamp
+  status        PaymentLinkStatus @default(PENDING)
+  txHash        String?
+  eventId       String?
+  note          String?
+  createdAt     DateTime          @default(now())
+  executedAt    DateTime?
+
+  @@index([senderAddress])
+  @@index([status])
+  @@index([expiry])
+  @@map("payment_links")
+}
+
+model Metric {
+  id                  String   @id @default(cuid())
+  metricName          String
+  pagePath            String?
+  value               String // Store as string to handle decimals
+  tags                Json
+  type                String
+  tagsHash            String // SHA256 hash for deduplication
+  externalApiCalled   Boolean  @default(false)
+  externalApiResponse Json?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([metricName, pagePath, tagsHash, type, value, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
+  @@index([externalApiCalled, createdAt])
+  @@map("metrics")
+}
