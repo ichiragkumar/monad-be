@@ -67,7 +67,7 @@ router.get("/", async (req, res, next) => {
     }
 
     if (status) {
-      where.status = status.toUpperCase();
+      where.status = String(status).toUpperCase();
     }
 
     if (fromDate || toDate) {

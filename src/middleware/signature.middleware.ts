@@ -9,17 +9,18 @@ export const verifyWalletSignature = (
   req: Request,
   res: Response,
   next: NextFunction
-): void => {
+): Response | void => {
   try {
     const { walletAddress, signature, message, timestamp } = req.body;
 
     if (!walletAddress || !signature || !message) {
-      return sendError(
+      sendError(
         res,
         ErrorCode.INVALID_PARAMETERS,
         "Missing required fields: walletAddress, signature, message",
         400
       );
+      return;
     }
 
     // Check timestamp (prevent replay attacks)
@@ -28,12 +29,13 @@ export const verifyWalletSignature = (
       const timeDiff = Math.abs(now - timestamp);
       if (timeDiff > 300) {
         // 5 minutes
-        return sendError(
+        sendError(
           res,
           ErrorCode.INVALID_PARAMETERS,
           "Signature timestamp expired",
           400
         );
+        return;
       }
     }
 
@@ -46,32 +48,35 @@ export const verifyWalletSignature = (
       const normalizedRecovered = ethers.getAddress(recoveredAddress);
 
       if (normalizedWallet.toLowerCase() !== normalizedRecovered.toLowerCase()) {
-        return sendError(
+        sendError(
           res,
           ErrorCode.INVALID_SIGNATURE,
           "Signature verification failed",
           401
         );
+        return;
       }
 
       // Add verified address to request
       (req as any).verifiedAddress = normalizedWallet;
       next();
     } catch (error) {
-      return sendError(
+      sendError(
         res,
         ErrorCode.INVALID_SIGNATURE,
         "Invalid signature format",
         401
       );
+      return;
     }
   } catch (error) {
-    return sendError(
+    sendError(
       res,
       ErrorCode.INTERNAL_ERROR,
       "Error verifying signature",
       500
     );
+    return;
   }
 };
 

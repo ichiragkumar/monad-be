@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { prisma } from "@/lib/prisma";
-import { sendSuccess, sendError, ErrorCode } from "@/utils/response.util";
+import { sendSuccess, sendError, sendPaginated, ErrorCode } from "@/utils/response.util";
 import { normalizeAddress } from "@/utils/address.utils";
 import { signPayload, generateNonce } from "@/utils/eip712.utils";
 import { z } from "zod";

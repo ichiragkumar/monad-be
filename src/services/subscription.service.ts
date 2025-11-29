@@ -1,37 +1,35 @@
 import { prisma } from "@/lib/prisma";
 import { ContractService } from "./contract.service";
-import { ethers } from "ethers";
+import { normalizeAddress } from "@/utils/address.utils";
+import { provider } from "@/lib/ethers";
 
 export class SubscriptionService {
   /**
    * Create a new subscription
+   * Note: This is a legacy method. New subscriptions should use the API endpoint.
    */
   static async createSubscription(
     subscriberAddress: string,
     vendorAddress: string,
-    planName: string,
-    amountPerPeriod: bigint,
-    periodDays: number = 30
+    amountPerPeriod: string,
+    intervalSeconds: bigint
   ) {
-    const subscriber = await prisma.user.findUnique({
-      where: { address: subscriberAddress },
-    });
+    const normalizedSubscriber = normalizeAddress(subscriberAddress);
+    const normalizedVendor = normalizeAddress(vendorAddress);
 
-    if (!subscriber) {
-      throw new Error("Subscriber not found");
-    }
-
-    const nextBillingDate = new Date();
-    nextBillingDate.setDate(nextBillingDate.getDate() + periodDays);
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    const nextPaymentTime = now + intervalSeconds;
 
     return await prisma.subscription.create({
       data: {
-        subscriberId: subscriber.id,
-        vendorAddress,
-        planName,
-        amountPerPeriod,
-        periodDays,
-        nextBillingDate,
+        onChainId: "0", // Should be set by API
+        payerAddress: normalizedSubscriber,
+        recipientAddress: normalizedVendor,
+        amount: amountPerPeriod,
+        interval: intervalSeconds,
+        nextPaymentTime,
+        startTime: now,
+        status: "ACTIVE",
       },
     });
   }
@@ -41,107 +39,123 @@ export class SubscriptionService {
    */
   static async processPayment(subscriptionId: string): Promise<string> {
     const subscription = await prisma.subscription.findUnique({
-      where: { id: subscriptionId },
-      include: { subscriber: true },
+      where: { subscriptionId },
+      include: { payer: true },
     });
 
     if (!subscription) {
       throw new Error("Subscription not found");
     }
 
-    if (!subscription.isActive) {
+    if (subscription.status !== "ACTIVE") {
       throw new Error("Subscription is not active");
     }
 
-    if (new Date() < subscription.nextBillingDate) {
-      throw new Error("Billing date has not been reached");
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    if (subscription.nextPaymentTime > now) {
+      throw new Error("Payment time has not been reached");
     }
 
-    // Transfer tokens from subscriber to vendor
+    // Transfer tokens from payer to recipient
+    const amount = BigInt(subscription.amount);
     const txHash = await ContractService.transferTokens(
-      subscription.subscriber.address,
-      subscription.vendorAddress,
-      subscription.amountPerPeriod
+      subscription.payerAddress,
+      subscription.recipientAddress,
+      amount
     );
 
     const receipt = await ContractService.getTransactionReceipt(txHash);
-    const periodStart = subscription.nextBillingDate;
-    const periodEnd = new Date(subscription.nextBillingDate);
-    periodEnd.setDate(periodEnd.getDate() + subscription.periodDays);
+    if (!receipt) {
+      throw new Error("Transaction receipt not found");
+    }
 
-    const nextBillingDate = new Date(periodEnd);
+    const nextPaymentTime = subscription.nextPaymentTime + subscription.interval;
+
+    // Get payment number
+    const paymentNumber = subscription.paidCount + 1;
 
     // Create payment record
     await prisma.subscriptionPayment.create({
       data: {
-        subscriptionId,
-        txHash: receipt.hash,
-        amount: subscription.amountPerPeriod,
+        subscriptionId: subscription.id,
+        txHash: receipt.hash || txHash,
+        amount: subscription.amount,
+        paymentNumber,
+        nextPaymentTime,
         status: receipt.status === 1 ? "CONFIRMED" : "FAILED",
-        periodStart,
-        periodEnd,
-        confirmedAt: receipt.status === 1 ? new Date() : null,
       },
     });
 
     // Update subscription
     if (receipt.status === 1) {
       await prisma.subscription.update({
-        where: { id: subscriptionId },
+        where: { id: subscription.id },
         data: {
-          nextBillingDate,
-          totalPaid: subscription.totalPaid + subscription.amountPerPeriod,
+          paidCount: paymentNumber,
+          nextPaymentTime,
         },
       });
+
+      // Get block to get timestamp - use provider directly
+      let blockTimestamp: bigint | null = null;
+      if (receipt.blockNumber) {
+        try {
+          const block = await provider.getBlock(Number(receipt.blockNumber));
+          blockTimestamp = block ? BigInt(block.timestamp) : null;
+        } catch (error) {
+          // If block fetch fails, continue without timestamp
+          console.error("Failed to fetch block timestamp:", error);
+        }
+      }
 
       // Create transaction record
       await prisma.transaction.create({
         data: {
-          userId: subscription.subscriberId,
-          fromAddress: subscription.subscriber.address,
-          toAddress: subscription.vendorAddress,
-          amount: subscription.amountPerPeriod,
+          txHash: receipt.hash || txHash,
+          fromAddress: subscription.payerAddress,
+          toAddress: subscription.recipientAddress,
+          amount: subscription.amount,
+          token: subscription.token,
           type: "SUBSCRIPTION",
           status: "CONFIRMED",
-          txHash: receipt.hash,
-          blockNumber: receipt.blockNumber?.toString(),
-          blockHash: receipt.blockHash || null,
+          syncStatus: "SYNCED",
+          blockNumber: receipt.blockNumber ? BigInt(receipt.blockNumber) : null,
+          blockTimestamp,
           gasUsed: receipt.gasUsed?.toString(),
           gasPrice: receipt.gasPrice?.toString(),
           metadata: {
-            subscriptionId,
-            planName: subscription.planName,
+            subscriptionId: subscription.id,
+            paymentNumber,
           },
           confirmedAt: new Date(),
         },
       });
     }
 
-    return receipt.hash;
+    return receipt.hash || txHash;
   }
 
   /**
    * Cancel subscription
    */
   static async cancelSubscription(subscriptionId: string, subscriberAddress: string) {
+    const normalizedAddress = normalizeAddress(subscriberAddress);
     const subscription = await prisma.subscription.findUnique({
-      where: { id: subscriptionId },
-      include: { subscriber: true },
+      where: { subscriptionId },
     });
 
     if (!subscription) {
       throw new Error("Subscription not found");
     }
 
-    if (subscription.subscriber.address !== subscriberAddress) {
+    if (subscription.payerAddress !== normalizedAddress) {
       throw new Error("Unauthorized");
     }
 
     return await prisma.subscription.update({
-      where: { id: subscriptionId },
+      where: { id: subscription.id },
       data: {
-        isActive: false,
-        cancelledAt: new Date(),
+        status: "CANCELLED",
       },
     });
   }
@@ -150,17 +164,14 @@ export class SubscriptionService {
    * Get subscriptions for a user
    */
   static async getUserSubscriptions(address: string) {
-    const user = await prisma.user.findUnique({
-      where: { address },
-    });
-
-    if (!user) {
-      throw new Error("User not found");
-    }
-
+    const normalizedAddress = normalizeAddress(address);
+    
     return await prisma.subscription.findMany({
       where: {
-        subscriberId: user.id,
+        OR: [
+          { payerAddress: normalizedAddress },
+          { recipientAddress: normalizedAddress },
+        ],
       },
       include: {
         payments: {
@@ -176,15 +187,17 @@ export class SubscriptionService {
    * Get active subscriptions due for billing
    */
   static async getDueSubscriptions() {
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    
     return await prisma.subscription.findMany({
       where: {
-        isActive: true,
-        nextBillingDate: {
-          lte: new Date(),
+        status: "ACTIVE",
+        nextPaymentTime: {
+          lte: now,
         },
       },
       include: {
-        subscriber: true,
+        payer: true,
       },
     });
   }

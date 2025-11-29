@@ -337,16 +337,21 @@ router.get("/participant/:walletAddress", async (req, res, next) => {
       eventIds.map(async (eventId) => {
         const [participantCount, rewards] = await Promise.all([
           prisma.eventParticipant.count({ where: { eventId } }),
-          prisma.reward.aggregate({
-            where: { eventId, status: "CONFIRMED" },
-            _sum: { totalAmount: true },
+          prisma.reward.findMany({
+            where: { eventId },
+            select: { totalAmount: true },
           }),
         ]);
+
+        const totalDistributed = rewards.reduce(
+          (sum, r) => sum + parseFloat(r.totalAmount || "0"),
+          0
+        ).toString();
 
         return {
           eventId,
           participantCount,
-          totalDistributed: rewards._sum.totalAmount || "0",
+          totalDistributed,
         };
       })
     );

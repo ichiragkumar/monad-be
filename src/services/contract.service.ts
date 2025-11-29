@@ -65,35 +65,27 @@ export class ContractService {
     // Execute airdrop
     const tx = await contract.airdrop(config.contracts.token, recipients, amounts);
     const receipt = await waitForTransaction(tx.hash);
+    if (!receipt) {
+      throw new Error("Transaction receipt not found");
+    }
 
     // Calculate total amount
     const totalAmount = amounts.reduce((sum, amount) => sum + amount, 0n);
 
-    // Update database
-    await prisma.airdrop.create({
-      data: {
-        eventId,
-        vendorAddress,
-        recipientCount: recipients.length,
-        totalAmount,
-        txHash: receipt.hash,
-        status: receipt.status === 1 ? "CONFIRMED" : "FAILED",
-        completedAt: new Date(),
-      },
-    });
-
+    // Note: Airdrop table removed - using Reward model instead
     // Create transaction records
-    if (receipt.status === 1) {
+    if (receipt && receipt.status === 1) {
       const transactions = recipients.map((recipient, index) => ({
+        txHash: `${receipt.hash}-${index}`,
         fromAddress: vendorAddress,
         toAddress: recipient,
-        amount: amounts[index],
-        tokenAddress: config.contracts.token,
-        type: "AIRDROP" as const,
+        amount: amounts[index].toString(),
+        token: "XTK",
+        type: "REWARD" as const,
         status: "CONFIRMED" as const,
-        txHash: receipt.hash,
-        blockNumber: receipt.blockNumber.toString(),
-        blockHash: receipt.blockHash,
+        syncStatus: "SYNCED" as const,
+        blockNumber: receipt.blockNumber ? BigInt(receipt.blockNumber) : null,
+        blockHash: receipt.blockHash || null,
         gasUsed: receipt.gasUsed?.toString(),
         gasPrice: receipt.gasPrice?.toString(),
         metadata: {
@@ -128,32 +120,26 @@ export class ContractService {
 
     const tx = await contract.airdropEqual(config.contracts.token, recipients, amount);
     const receipt = await waitForTransaction(tx.hash);
+    if (!receipt) {
+      throw new Error("Transaction receipt not found");
+    }
 
     const totalAmount = amount * BigInt(recipients.length);
 
-    await prisma.airdrop.create({
-      data: {
-        eventId,
-        vendorAddress,
-        recipientCount: recipients.length,
-        totalAmount,
-        txHash: receipt.hash,
-        status: receipt.status === 1 ? "CONFIRMED" : "FAILED",
-        completedAt: new Date(),
-      },
-    });
-
-    if (receipt.status === 1) {
-      const transactions = recipients.map((recipient) => ({
+    // Note: Airdrop table removed - using Reward model instead
+    // Create transaction records
+    if (receipt && receipt.status === 1) {
+      const transactions = recipients.map((recipient, index) => ({
+        txHash: `${receipt.hash}-${index}`,
         fromAddress: vendorAddress,
         toAddress: recipient,
-        amount,
-        tokenAddress: config.contracts.token,
-        type: "AIRDROP" as const,
+        amount: amount.toString(),
+        token: "XTK",
+        type: "REWARD" as const,
         status: "CONFIRMED" as const,
-        txHash: receipt.hash,
-        blockNumber: receipt.blockNumber.toString(),
-        blockHash: receipt.blockHash,
+        syncStatus: "SYNCED" as const,
+        blockNumber: receipt.blockNumber ? BigInt(receipt.blockNumber) : null,
+        blockHash: receipt.blockHash || null,
         gasUsed: receipt.gasUsed?.toString(),
         gasPrice: receipt.gasPrice?.toString(),
         metadata: { eventId },
@@ -177,6 +163,9 @@ export class ContractService {
     const contract = getContractWithSigner(config.contracts.vendorRegistry, VENDOR_REGISTRY_ABI);
     const tx = await contract.registerVendor(vendorAddress, businessName);
     const receipt = await waitForTransaction(tx.hash);
+    if (!receipt) {
+      throw new Error("Transaction receipt not found");
+    }
 
     return receipt.hash;
   }
@@ -199,6 +188,9 @@ export class ContractService {
     const contract = getContractWithSigner(config.contracts.ensSubdomainRegistrar, ENS_REGISTRAR_ABI);
     const tx = await contract.registerSubdomain(label, ownerAddress);
     const receipt = await waitForTransaction(tx.hash);
+    if (!receipt) {
+      throw new Error("Transaction receipt not found");
+    }
 
     return receipt.hash;
   }
@@ -214,6 +206,9 @@ export class ContractService {
     const contract = getContractWithSigner(config.contracts.token, ERC20_ABI);
     const tx = await contract.transfer(toAddress, amount);
     const receipt = await waitForTransaction(tx.hash);
+    if (!receipt) {
+      throw new Error("Transaction receipt not found");
+    }
 
     return receipt.hash;
   }

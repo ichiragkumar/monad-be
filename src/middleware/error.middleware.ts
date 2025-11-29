@@ -21,42 +21,45 @@ export const errorHandler = (
   req: Request,
   res: Response,
   next: NextFunction
-): void => {
+): Response | void => {
   const isDevelopment = config.server.nodeEnv === "development";
 
   if (err instanceof AppError) {
-    return sendError(
+    sendError(
       res,
       err.code,
       err.message,
       err.statusCode,
       isDevelopment ? { stack: err.stack } : undefined
     );
+    return;
   }
 
   // Handle known error types
   if (err.message.includes("ECONNREFUSED")) {
-    return sendError(
+    sendError(
       res,
       ErrorCode.INTERNAL_ERROR,
       "Blockchain connection failed: Unable to connect to Monad network",
       503
     );
+    return;
   }
 
   // Validation errors (Zod)
   if ((err as any).issues) {
-    return sendError(
+    sendError(
       res,
       ErrorCode.INVALID_PARAMETERS,
       "Validation failed",
       400,
       (err as any).issues
     );
+    return;
   }
 
   // Default error
-  return sendError(
+  sendError(
     res,
     ErrorCode.INTERNAL_ERROR,
     isDevelopment ? err.message : "Internal server error",
