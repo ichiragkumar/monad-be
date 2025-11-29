@@ -278,5 +278,119 @@ router.get("/:eventId/participants", async (req, res, next) => {
   }
 });
 
+/**
+ * GET /api/v1/events/participant/:walletAddress
+ * Get all events where user is a participant
+ */
+router.get("/participant/:walletAddress", async (req, res, next) => {
+  try {
+    const { walletAddress } = req.params;
+    const { page = "1", limit = "20", status } = req.query;
+
+    const normalizedAddress = normalizeAddress(walletAddress);
+    const pageNum = parseInt(page as string) || 1;
+    const limitNum = parseInt(limit as string) || 20;
+    const skip = (pageNum - 1) * limitNum;
+
+    // Build where clause for events
+    const eventWhere: any = {};
+    if (status) {
+      eventWhere.status = (status as string).toUpperCase();
+    }
+
+    // Get participant entries for this address
+    const participantWhere: any = {
+      address: normalizedAddress,
+    };
+
+    if (Object.keys(eventWhere).length > 0) {
+      participantWhere.event = eventWhere;
+    }
+
+    const [participants, total] = await Promise.all([
+      prisma.eventParticipant.findMany({
+        where: participantWhere,
+        include: {
+          event: {
+            include: {
+              organizer: {
+                select: {
+                  address: true,
+                  ensName: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limitNum,
+      }),
+      prisma.eventParticipant.count({
+        where: participantWhere,
+      }),
+    ]);
+
+    // Get participant counts and totals for each event
+    const eventIds = participants.map((p) => p.eventId);
+    const eventStats = await Promise.all(
+      eventIds.map(async (eventId) => {
+        const [participantCount, rewards] = await Promise.all([
+          prisma.eventParticipant.count({ where: { eventId } }),
+          prisma.reward.aggregate({
+            where: { eventId, status: "CONFIRMED" },
+            _sum: { totalAmount: true },
+          }),
+        ]);
+
+        return {
+          eventId,
+          participantCount,
+          totalDistributed: rewards._sum.totalAmount || "0",
+        };
+      })
+    );
+
+    const statsMap = new Map(eventStats.map((s) => [s.eventId, s]));
+
+    const formatted = participants.map((participant) => {
+      const stats = statsMap.get(participant.eventId) || {
+        participantCount: 0,
+        totalDistributed: "0",
+      };
+
+      return {
+        eventId: participant.event.id,
+        event: {
+          id: participant.event.id,
+          name: participant.event.name,
+          description: participant.event.description,
+          status: participant.event.status.toLowerCase(),
+          startDate: participant.event.eventDate,
+          endDate: null, // Not in schema, could add
+          organizer: participant.event.organizer
+            ? {
+                address: participant.event.organizer.address,
+                ensName: participant.event.organizer.ensName,
+              }
+            : null,
+        },
+        participant: {
+          address: participant.address,
+          amount: participant.amount,
+          claimed: false, // Could add claim logic later
+          addedAt: participant.createdAt,
+        },
+        participantCount: stats.participantCount,
+        totalDistributed: stats.totalDistributed,
+      };
+    });
+
+    return sendPaginated(res, formatted, pageNum, limitNum, total);
+  } catch (error) {
+    next(error);
+  }
+});
+
 export default router;
 

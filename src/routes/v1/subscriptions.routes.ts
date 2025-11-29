@@ -250,7 +250,7 @@ router.post("/:subscriptionId/payments", async (req, res, next) => {
         status: "PENDING",
         syncStatus: "PENDING",
         metadata: {
-          subscriptionId: subscription.subscriptionId,
+          subscriptionId: subscription.id,
           paymentNumber,
         },
       },
@@ -267,6 +267,89 @@ router.post("/:subscriptionId/payments", async (req, res, next) => {
       },
       201
     );
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/v1/subscriptions/next-payments
+ * Get upcoming subscription payments for a user
+ */
+router.get("/next-payments", async (req, res, next) => {
+  try {
+    const { walletAddress, days = "30", limit = "20" } = req.query;
+
+    if (!walletAddress) {
+      return sendError(
+        res,
+        ErrorCode.INVALID_PARAMETERS,
+        "walletAddress is required",
+        400
+      );
+    }
+
+    const normalizedAddress = normalizeAddress(walletAddress as string);
+    const daysNum = Math.min(parseInt(days as string) || 30, 365);
+    const limitNum = Math.min(parseInt(limit as string) || 20, 100);
+
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    const futureTime = BigInt(Math.floor((Date.now() + daysNum * 24 * 60 * 60 * 1000) / 1000));
+
+    // Get active subscriptions where user is the payer
+    const subscriptions = await prisma.subscription.findMany({
+      where: {
+        payerAddress: normalizedAddress,
+        status: "ACTIVE",
+        nextPaymentTime: {
+          lte: futureTime,
+        },
+      },
+      orderBy: { nextPaymentTime: "asc" },
+      take: limitNum,
+    });
+
+    const nowTimestamp = Math.floor(Date.now() / 1000);
+    const formatted = subscriptions.map((sub) => {
+      const nextPaymentTimestamp = Number(sub.nextPaymentTime);
+      const daysUntilDue = Math.ceil((nextPaymentTimestamp - nowTimestamp) / 86400);
+      const isDue = nextPaymentTimestamp <= nowTimestamp;
+
+      return {
+        subscriptionId: sub.subscriptionId,
+        onChainId: sub.onChainId,
+        subscriberAddress: sub.payerAddress,
+        recipient: sub.recipientAddress,
+        planName: null, // Not stored in current schema, could be added
+        amount: sub.amount,
+        nextPaymentTime: sub.nextPaymentTime.toString(),
+        nextBillingDate: new Date(Number(sub.nextPaymentTime) * 1000).toISOString(),
+        interval: sub.interval.toString(),
+        periodDays: Math.floor(Number(sub.interval) / 86400),
+        isDue,
+        daysUntilDue: isDue ? 0 : daysUntilDue,
+        totalPayments: sub.totalPayments,
+        paidCount: sub.paidCount,
+        progress: sub.totalPayments > 0 ? `${sub.paidCount}/${sub.totalPayments}` : `${sub.paidCount}/∞`,
+      };
+    });
+
+    // Calculate meta
+    const totalDue = formatted.filter((s) => s.isDue).length;
+    const totalAmountDue = formatted
+      .filter((s) => s.isDue)
+      .reduce((sum, s) => sum + parseFloat(s.amount || "0"), 0)
+      .toFixed(2);
+
+    return sendSuccess(res, {
+      data: formatted,
+      meta: {
+        totalUpcoming: formatted.length,
+        totalDue,
+        totalAmountDue,
+        lookAheadDays: daysNum,
+      },
+    });
   } catch (error) {
     next(error);
   }

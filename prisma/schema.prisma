@@ -76,6 +76,9 @@ model User {
   paymentLinks          PaymentLink[]
   rewards               Reward[]
 
+  // Relations
+  vendorRequests VendorRequest[]
+
   @@index([address])
   @@index([ensName])
   @@map("users")
@@ -282,6 +285,27 @@ model PaymentLink {
   @@index([status])
   @@index([expiry])
   @@map("payment_links")
+}
+
+model VendorRequest {
+  id              String    @id @default(cuid())
+  requestId       String    @unique @default(cuid())
+  walletAddress   String
+  user            User?     @relation(fields: [walletAddress], references: [address], onDelete: Cascade)
+  businessName    String?
+  description     String?
+  website         String?
+  status          String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  submittedAt     DateTime  @default(now())
+  reviewedAt      DateTime?
+  reviewedBy      String?
+  rejectionReason String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([walletAddress])
+  @@index([status])
+  @@map("vendor_requests")
 }
 
 model Metric {

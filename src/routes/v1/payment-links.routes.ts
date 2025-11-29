@@ -190,5 +190,85 @@ router.post("/:paymentLinkId/execute", async (req, res, next) => {
   }
 });
 
+/**
+ * GET /api/v1/payment-links/initiated/:walletAddress
+ * Get all payment links created by a user
+ */
+router.get("/initiated/:walletAddress", async (req, res, next) => {
+  try {
+    const { walletAddress } = req.params;
+    const { page = "1", limit = "20", status = "all" } = req.query;
+
+    const normalizedAddress = normalizeAddress(walletAddress);
+    const pageNum = parseInt(page as string) || 1;
+    const limitNum = parseInt(limit as string) || 20;
+    const skip = (pageNum - 1) * limitNum;
+
+    const where: any = {
+      senderAddress: normalizedAddress,
+    };
+
+    if (status !== "all") {
+      where.status = (status as string).toUpperCase();
+    }
+
+    // Check for expired links
+    if (status === "all" || status === "expired") {
+      // This will be handled in the formatting step
+    }
+
+    const [paymentLinks, total] = await Promise.all([
+      prisma.paymentLink.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip,
+        take: limitNum,
+      }),
+      prisma.paymentLink.count({ where }),
+    ]);
+
+    const now = BigInt(Math.floor(Date.now() / 1000));
+    const formatted = paymentLinks.map((link) => {
+      const recipients = link.recipients as any[];
+      const totalAmount = recipients.reduce(
+        (sum: bigint, r: any) => sum + BigInt(r.amount || "0"),
+        0n
+      );
+
+      // Check if expired
+      let linkStatus = link.status.toLowerCase();
+      if (link.expiry && link.expiry < now && linkStatus === "pending") {
+        linkStatus = "expired";
+      }
+
+      return {
+        id: link.id,
+        linkId: link.paymentLinkId,
+        creatorAddress: link.senderAddress,
+        recipients: recipients.map((r: any) => ({
+          address: r.address,
+          amount: r.amount,
+        })),
+        totalAmount: totalAmount.toString(),
+        status: linkStatus,
+        executedAt: link.executedAt,
+        txHash: link.txHash,
+        expiresAt: link.expiry.toString(),
+        createdAt: link.createdAt,
+        executionCount: link.executedAt ? 1 : 0, // Simplified - could track multiple executions
+      };
+    });
+
+    // Filter by status if needed (for expired)
+    const filtered = status === "expired"
+      ? formatted.filter((link) => link.status === "expired")
+      : formatted;
+
+    return sendPaginated(res, filtered, pageNum, limitNum, filtered.length);
+  } catch (error) {
+    next(error);
+  }
+});
+
 export default router;
 
