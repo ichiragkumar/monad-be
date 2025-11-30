@@ -52,7 +52,7 @@ router.post("/", validate(createEventSchema), async (req, res, next) => {
         name,
         description,
         eventDate: eventDate ? new Date(eventDate) : null,
-        status: status.toUpperCase(),
+        status: (status || "draft").toUpperCase() as any,
         metadata: metadata || {},
         participantCount: 0,
         totalDistributed: "0",
